@@ -1,12 +1,11 @@
 use bevy::prelude::*;
 use bevy_flycam::PlayerPlugin;
 
-mod boid;
-
 fn setup(
     commands: &mut Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut segments: ResMut<CubeSegments>,
 ) {
     commands
         .spawn(PbrBundle {
@@ -22,69 +21,99 @@ fn setup(
             },
             transform: Transform::from_translation(Vec3::new(0.0, 10.0, 0.0)),
             ..Default::default()
-        })
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.5 })),
-            material: materials.add(Color::hex("041c56").unwrap().into()),
-            transform: Transform::from_translation(Vec3::new(0.0, 15.0, 0.0)),
-            ..Default::default()
-        })
-        .with(Rotator)
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-            material: materials.add(Color::hex("38b6ff").unwrap().into()),
-            transform: Transform::from_translation(Vec3::new(0.0, 10.0, 10.0)),
-            ..Default::default()
-        })
-        .with(Spinner)
-        .spawn(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 2.0 })),
-            material: materials.add(Color::hex("ffb6ff").unwrap().into()),
-            transform: Transform::from_translation(Vec3::new(0.0, 25.0, 0.0)),
-            ..Default::default()
-        })
-        .with(Rotator2);
+        });
+
+    segments.0.push(
+        commands
+            .spawn(PbrBundle {
+                mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
+                material: materials.add(Color::hex("ffb6ff").unwrap().into()),
+                transform: Transform::from_translation(Vec3::new(0.0, 25.0, 0.0)),
+                ..Default::default()
+            })
+            .with(AlphaCube)
+            .with(NextFrameTransform::default())
+            .current_entity()
+            .unwrap(),
+    );
+    for i in 1..=7 {
+        segments.0.push(
+            commands
+                .spawn(PbrBundle {
+                    mesh: meshes.add(Mesh::from(shape::Cube { size: 0.5 })),
+                    material: materials.add(Color::hex("ffb6ff").unwrap().into()),
+                    transform: Transform::from_translation(Vec3::new(0.0, 25.0, 5.0 * i as f32)),
+                    ..Default::default()
+                })
+                .with(NextFrameTransform::default())
+                .current_entity()
+                .unwrap(),
+        )
+    }
 }
 
-struct Rotator2;
+#[derive(Debug, Default, Copy, Clone)]
+pub struct NextFrameTransform {
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
+}
 
-fn rotator2_movement(
+struct AlphaCube;
+
+#[derive(Default)]
+struct CubeSegments(Vec<Entity>);
+
+fn cube_chain_movement(
     time: Res<Time>,
-    mut rotator2_positions: Query<&mut Transform, With<Rotator2>>,
+    segments: ResMut<CubeSegments>,
+    alpha_cube: Query<Entity, With<AlphaCube>>,
+    mut positions: Query<(&mut NextFrameTransform, &mut Transform)>,
 ) {
-    for mut transform in rotator2_positions.iter_mut() {
+    if let Some(alpha_entity) = alpha_cube.iter().next() {
+        let (mut next_frame_transform, mut transform) = positions.get_mut(alpha_entity).unwrap();
         let time_delta = time.seconds_since_startup();
-        println!("time_delta is {}", time_delta);
-        transform.translation.x = ((5.0 * time_delta).sin() as f32 * 5.0) + (time_delta.sin() as f32 * 20.0);
-        transform.translation.y = (5.0 * time_delta).cos() as f32 * 5.0;
-        transform.translation.z = time_delta.cos() as f32 * 20.0;
-        println!("transform.translation is {}", transform.translation);
+        transform.translation.x =
+            ((2.0 * time_delta).sin() as f32 * 5.0) + (time_delta.sin() as f32 * 5.0);
+        transform.translation.y = (2.0 * time_delta).cos() as f32 * 5.0;
+        transform.translation.z -= 0.01;
+
+        next_frame_transform.translation = transform.translation;
+        next_frame_transform.rotation = transform.rotation;
+        next_frame_transform.scale = transform.scale;
+
+        let segment_transforms = segments
+            .0
+            .iter()
+            .map(|e| *positions.get_mut(*e).unwrap().0)
+            .collect::<Vec<NextFrameTransform>>();
+
+        segment_transforms
+            .iter()
+            .zip(segments.0.iter().skip(1))
+            .for_each(|(pos, segment)| {
+                let mut pos = *pos;
+                pos.translation.z += 0.75;
+                *positions.get_mut(*segment).unwrap().0 = pos;
+            });
     }
 }
 
-struct Spinner;
-
-fn spinner_movement(time: Res<Time>, mut spinner_positions: Query<&mut Transform, With<Spinner>>) {
-    let angle = std::f32::consts::PI / 4.0;
-    for mut transform in spinner_positions.iter_mut() {
-        transform.translation.x = time.seconds_since_startup().sin() as f32 * 15.0;
-        transform.translation.z = time.seconds_since_startup().cos() as f32 * 15.0;
-        transform.rotate(Quat::from_axis_angle(
-            Vec3::new(0.33, 0.33, 0.33),
-            angle * time.delta_seconds(),
-        ));
-    }
-}
-
-struct Rotator;
-
-fn rotator_movement(time: Res<Time>, mut rotator_positions: Query<&mut Transform, With<Rotator>>) {
-    let angle = std::f32::consts::PI / 4.0;
-    for mut transform in rotator_positions.iter_mut() {
-        transform.translation.x = transform.translation.x * (time.delta_seconds() * angle).cos() as f32
-            - transform.translation.y * (time.delta_seconds() * angle).sin() as f32;
-        transform.translation.y = transform.translation.y * (time.delta_seconds() * angle).cos() as f32
-            + transform.translation.x * (time.delta_seconds() * angle).sin() as f32;
+fn transform_propagation(
+    alpha_cube: Query<Entity, With<AlphaCube>>,
+    mut q: Query<(Entity, &NextFrameTransform, &mut Transform)>,
+) {
+    let alpha_entity = loop {
+        if let Some(entity) = alpha_cube.iter().next() {
+            break entity;
+        }
+    };
+    for (entity, next_transform, mut transform) in q.iter_mut() {
+        if alpha_entity != entity {
+            transform.translation = next_transform.translation;
+            transform.rotation = next_transform.rotation;
+            transform.scale = next_transform.scale;
+        }
     }
 }
 
@@ -93,10 +122,10 @@ fn main() {
     App::build()
         .add_resource(ClearColor(Color::MIDNIGHT_BLUE))
         .add_resource(Msaa { samples: 4 })
+        .add_resource(CubeSegments::default())
         .add_startup_system(setup.system())
-        .add_system(rotator_movement.system())
-        .add_system(rotator2_movement.system())
-        .add_system(spinner_movement.system())
+        .add_system(cube_chain_movement.system())
+        .add_system(transform_propagation.system())
         .add_plugins(DefaultPlugins)
         .add_plugin(PlayerPlugin)
         .run();
